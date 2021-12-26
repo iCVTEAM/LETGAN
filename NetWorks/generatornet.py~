@@ -1,0 +1,689 @@
+import os
+import torch
+import torch.nn as nn
+import torch.nn.init as init
+import torch.nn.functional as F
+import numpy as np
+
+from torch.utils import model_zoo
+from torchvision import models
+from .resample2d_package.resample2d import Resample2d
+
+import imageio
+from sys import version_info
+
+import torch
+import torchvision
+import numpy as np
+from torch import nn
+import torch.nn.functional as F
+from sys import version_info
+
+from .resnet_model import *
+
+class EvSegNet(nn.Module):
+    def __init__(self, args):
+        if(version_info.major == 2):
+            super(EvSegNet,self).__init__()
+        else:
+            super().__init__()
+            
+        self.minimum_threshold = args.minimum_threshold
+
+        self.debug_mode = args.debug
+        self.is_cuda_available = args.cuda
+        self.resizeShape = args.size
+        self.args = args
+
+        resnet = models.resnet34(pretrained=False)
+        #resnet.load_state_dict(torch.load('/media/localdisk1/usr/gdx/project/Pytorch/PyTorchModel/resnet34-333f7ec4.pth'), strict=True)
+        ## -------------Encoder--------------
+
+        self.inconv = nn.Sequential(nn.Conv2d(1,64,3,padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True))
+        
+        #stage 1
+        self.encoder1 = nn.Sequential(BasicBlock(64,64)) #224
+
+        self.pool1 = nn.MaxPool2d(2,2,ceil_mode=True)
+        
+        #stage 2
+        self.encoder2 = nn.Sequential(BasicBlock(64,64),
+            BasicBlock(64,64)) #112
+
+        self.pool2 = nn.MaxPool2d(2,2,ceil_mode=True)
+
+        #stage 3
+        self.encoder3 = resnet.layer1 #56
+        #stage 4
+        self.encoder4 = resnet.layer2 #28
+        #stage 5
+        self.encoder5 = resnet.layer3 #14
+        #stage 6
+        self.encoder6 = resnet.layer4 #7
+
+        ## -------------Bridge--------------
+
+        #stage Bridge
+        self.bridge = nn.Sequential(nn.Conv2d(512,512,3,dilation=2, padding=2),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512,512,3,dilation=2, padding=2),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512,512,3,dilation=2, padding=2),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True)) # 7
+
+        ## -------------Decoder--------------
+
+        #stage 6d
+        self.decoder6_m = nn.Sequential(nn.Conv2d(1024,512,3,padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512,512,3,dilation=2, padding=2),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512,256,3,dilation=2, padding=2),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear'))# 7
+
+        #stage 5d
+        self.decoder5_m = nn.Sequential(nn.Conv2d(512,256,3,padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256,256,3,padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256,128,3,padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear'))# 14
+
+        #stage 4d
+        self.decoder4_m = nn.Sequential(nn.Conv2d(256,128,3,padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128,128,3,padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128,64,3,padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear'))# 28
+
+        #stage 3d
+        self.decoder3_m = nn.Sequential(nn.Conv2d(128,64,3,padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64,64,3,padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64,64,3,padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear'))# 56
+
+        #stage 2d
+        self.decoder2_m = nn.Sequential(nn.Conv2d(128,64,3,padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64,64,3,padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear'))# 112
+
+        #stage 1d
+        self.decoder1_m = nn.Sequential(nn.Conv2d(128,64,3,padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True))# 224
+            
+        self.final_m = nn.Conv2d(64,1,3,padding=1)
+        
+        #stage 6d
+        self.decoder6_s = nn.Sequential(nn.Conv2d(1024,512,3,padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512,512,3,dilation=2, padding=2),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512,256,3,dilation=2, padding=2),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear'))# 7
+
+        #stage 5d
+        self.decoder5_s = nn.Sequential(nn.Conv2d(512,256,3,padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256,256,3,padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256,128,3,padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear'))# 14
+
+        #stage 4d
+        self.decoder4_s = nn.Sequential(nn.Conv2d(256,128,3,padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128,128,3,padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128,64,3,padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear'))# 28
+
+        #stage 3d
+        self.decoder3_s = nn.Sequential(nn.Conv2d(128,64,3,padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64,64,3,padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64,64,3,padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear'))# 56
+
+        #stage 2d
+        self.decoder2_s = nn.Sequential(nn.Conv2d(128,64,3,padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64,64,3,padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear'))# 112
+
+        #stage 1d
+        self.decoder1_s = nn.Sequential(nn.Conv2d(128,64,3,padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True))# 224
+            
+        self.final_s = nn.Conv2d(64,1,3,padding=1)
+
+        self.resample2d = Resample2d()
+    
+    def forward2(self, images, irradiance_maps, optic_flows, image_path):
+        #min_x = irradiance_maps.size()[2]//2-self.args.size[0]//2
+        #max_x = irradiance_maps.size()[2]//2+self.args.size[0]//2
+        #min_y = irradiance_maps.size()[3]//2-self.args.size[1]//2
+        #max_y = irradiance_maps.size()[3]//2+self.args.size[1]//2
+        image_name = image_path.split('/')[-1]
+        folder_name = image_name[:-4]
+        os.mkdir(os.path.join('./Data/VTE/Img',folder_name))
+        #imageio.imwrite('00000.png', images[0,:,min_x:max_x,min_y:max_y].squeeze().cpu().data.numpy())
+        np.save(os.path.join('./Data/VTE/Ifo',folder_name+'.npy'), optic_flows[0].cpu().data.numpy())
+        frame_num = 10
+        for i in range(0,frame_num):
+            resample = self.resample2d(images, optic_flows*i/frame_num)
+            imageio.imwrite(os.path.join('./Data/VTE/Img',folder_name,str(i).zfill(5)+'.png'), ((resample[0].cpu().data.numpy()*np.array([[[.226]]])+np.array([[[.449]]]))*255).transpose(1,2,0).astype(np.uint8))
+            #np.save(os.path.join('./Data/VTE/Img',folder_name,str(i)+'.npy'), ((resample[0,:,min_x:max_x,min_y:max_y].cpu().data.numpy()*np.array([[[.226]]])+np.array([[[.449]]]))*255).transpose(1,2,0).astype(np.uint8))
+    
+    def forward(self, images, irradiance_maps, optic_flows):
+        resample = self.resample2d(irradiance_maps, optic_flows)
+        images_next = self.resample2d(images, optic_flows)
+        #print(irradiance_maps[0,0,23,24])
+        #print(resample[0,0,23,24])
+        #print(images.size(),irradiance_maps.size(),resample.size())
+        
+        min_x = irradiance_maps.size()[2]//2-self.args.size[0]//2
+        max_x = irradiance_maps.size()[2]//2+self.args.size[0]//2
+        min_y = irradiance_maps.size()[3]//2-self.args.size[1]//2
+        max_y = irradiance_maps.size()[3]//2+self.args.size[1]//2
+        
+        images = images[:,:,min_x:max_x,min_y:max_y]
+        irradiance_maps = irradiance_maps[:,:,min_x:max_x,min_y:max_y]
+        resample = resample[:,:,min_x:max_x,min_y:max_y]
+        images_next = images_next[:,:,min_x:max_x,min_y:max_y]
+        #print(irradiance_maps.size(), resample.size())
+        
+        
+        x = images_next
+
+        ## -------------Encoder-------------
+        x = self.inconv(x)
+
+        enc1 = self.encoder1(x)
+        enc2 = self.encoder2(self.pool1(enc1))
+        enc3 = self.encoder3(self.pool2(enc2))
+        enc4 = self.encoder4(enc3)
+        enc5 = self.encoder5(enc4)
+        enc6 = self.encoder6(enc5)
+        ## -------------Bridge-------------
+        hbg = self.bridge(enc6)
+        ## -------------Decoder-------------
+        dec6_m = self.decoder6_m(torch.cat((hbg,enc6),1))
+        dec5_m = self.decoder5_m(torch.cat((dec6_m,enc5),1))
+        dec4_m = self.decoder4_m(torch.cat((dec5_m,enc4),1))
+        dec3_m = self.decoder3_m(torch.cat((dec4_m,enc3),1))
+        dec2_m = self.decoder2_m(torch.cat((dec3_m,enc2),1))
+        dec1_m = self.decoder1_m(torch.cat((dec2_m,enc1),1))
+        normal_mean = self.final_m(dec1_m)
+        
+        dec6_s = self.decoder6_s(torch.cat((hbg,enc6),1))
+        dec5_s = self.decoder5_s(torch.cat((dec6_s,enc5),1))
+        dec4_s = self.decoder4_s(torch.cat((dec5_s,enc4),1))
+        dec3_s = self.decoder3_s(torch.cat((dec4_s,enc3),1))
+        dec2_s = self.decoder2_s(torch.cat((dec3_s,enc2),1))
+        dec1_s = self.decoder1_s(torch.cat((dec2_s,enc1),1))
+        normal_std = self.final_s(dec1_s)
+        
+        #mean = normal[:,0,:]
+        #std = normal[:,1,:]
+        #print(x.size(),normal_mean.size(),normal_std.size())
+        #print(a)
+        normal_sample = torch.randn(normal_mean.size())
+        if self.is_cuda_available:
+            normal_sample = normal_sample.cuda()
+        #threshold_C_pos = normal_sample[:,0:1,:] * normal[:,1:2,:] + normal[:,0:1,:]
+        #threshold_C_neg = normal_sample[:,1:2,:] * normal[:,1:2,:] + normal[:,0:1,:]
+        threshold_C_pos = normal_sample * normal_std + normal_mean
+        #threshold_C_neg = normal_sample * normal_std + normal_mean
+        #threshold_C_pos = normal_sample * 0.03 + normal_mean
+        #threshold_C_neg = normal_sample * 0.03 + normal_std
+        #threshold_C_pos = normal_sample * 0.05 + 0.2
+        #threshold_C_neg = normal_sample * 0.05 + 0.2
+        #print(threshold_C_pos[0,0,23,24])
+        #print(threshold_C_neg[0,0,23,24])
+        threshold_C_pos = F.relu(threshold_C_pos - self.minimum_threshold) + self.minimum_threshold
+        #threshold_C_neg = F.relu(threshold_C_neg - self.minimum_threshold) + self.minimum_threshold
+        #print(threshold_C_pos[0,0,23,24])
+        #print(threshold_C_neg[0,0,23,24])
+        #print(irradiance_maps.size())
+        #print(optic_flows.size())
+        
+        deltaTime = 0.003
+        cutoff_hz = 30
+        irradiance_maps_leak = F.relu(irradiance_maps-0.1*deltaTime*10/threshold_C_pos) #leak noise 0.1 duration time 0.03s
+        eps = (images_next*0.226+0.449)+0.1
+        tau = (1 / (np.pi * 2 * cutoff_hz))
+        eps = eps * (deltaTime / tau)
+        eps[eps[:] > 1] = 1  # keep filter stable
+        resample_filter = (1-eps)*irradiance_maps+eps*resample
+        #resample_filter = (1-eps)*irradiance_maps+eps*resample_filter
+        #resample_filter = resample
+        '''
+        deltaTime = 0.005
+        cutoff_hz = 300
+        irradiance_maps_leak = F.relu(irradiance_maps-0.1*deltaTime*10/threshold_C_pos) #leak noise 0.1 duration time 0.05s
+        inten01 = ((images_next*0.226+0.449)*255 + 20)/275 # limit max time constant to ~1/10 of white intensity level
+        tau = (1 / (np.pi * 2 * cutoff_hz))
+        # make the update proportional to the local intensity
+        eps = inten01 * (deltaTime / tau)
+        eps[eps[:] > 1] = 1  # keep filter stable
+        # first internal state is updated
+        print(inten01,(deltaTime / tau))
+        print(-1,irradiance_maps[0,0,24,24])
+        print(0,irradiance_maps_leak[0,0,24,24])
+        print(1,resample[0,0,24,24])
+        print(1.5,eps[0,0,24,24])
+        lpLogFrame0 = (1-eps)*irradiance_maps+eps*resample
+        # then 2nd internal state (output) is updated from first
+        resample_filter = (1-eps)*irradiance_maps+eps*lpLogFrame0
+        print(2,resample_filter[0,0,24,24])
+        '''
+        diffImg = resample_filter - irradiance_maps_leak
+        
+        output = diffImg / threshold_C_pos
+        #resample_pos = F.relu(resample_the)
+        #resample_neg = F.relu(-resample_the)
+        #resample_pos = F.relu(diffImg) / threshold_C_pos
+        #resample_neg = F.relu(-diffImg) / threshold_C_neg
+        #print(resample_pos[0,0,23,24])
+        #print(resample_neg[0,0,23,24])
+        #output = resample_pos - resample_neg
+        #print(output[0,0,23,24])
+
+        #resample_pos = self.sigmoid(resample_pos)
+        #resample_neg = self.sigmoid(resample_neg)
+        #resample_pos = resample_pos / regularization
+        #resample_neg = resample_neg / regularization
+
+        #output = torch.cat((resample_pos,resample_neg),dim=1)
+        
+        '''
+        real_normal_sample = torch.randn(normal_mean.size())
+        if self.is_cuda_available:
+            real_normal_sample = real_normal_sample.cuda()
+        real_threshold_C_pos = real_normal_sample * 0.021 + 0.15
+        real_threshold_C_neg = real_normal_sample * 0.021 + 0.15
+        real_threshold_C_pos = F.relu(real_threshold_C_pos - self.minimum_threshold) + self.minimum_threshold
+        real_threshold_C_neg = F.relu(real_threshold_C_neg - self.minimum_threshold) + self.minimum_threshold
+        real_resample_pos = F.relu(diffImg) / real_threshold_C_pos
+        real_resample_neg = F.relu(-diffImg) / real_threshold_C_neg
+        
+        #real_resample_pos = self.sigmoid(real_resample_pos)
+        #real_resample_neg = self.sigmoid(real_resample_neg)
+        
+        #real_resample_pos = real_resample_pos / regularization
+        #real_resample_neg = real_resample_neg / regularization
+
+        real_output = torch.cat((real_resample_pos,real_resample_neg),dim=1)
+        '''
+        #randSample = torch.rand_like(output)
+        #if self.is_cuda_available:
+        #    randSample = randSample.cuda()
+        #output = output - torch.log(-torch.log(randSample))
+        #output = F.softmax(output, dim=1)
+        if self.debug_mode:
+            print('fake pos mean std, neg mean std', threshold_C_pos.mean(), threshold_C_pos.std(),threshold_C_neg.mean(), threshold_C_neg.std())
+            print('fake pos mean, neg mean', resample_pos.mean(), resample_neg.mean())
+
+
+        if False and self.debug_mode:            
+            #print('INFO: generatornet forward print Image')
+            #print('real max', real_output[0].mean())
+            #print('fake max', output[0].mean())
+            #print('real max', real_output[0].max().max().max())
+            #y = resample_pos[0,0].max(0)[0].max(0)[1]
+            #x = resample_pos[0,0].max(1)[0].max(0)[1]
+            #print(x,y)
+            #print(resample)
+            #print('regularization',regularization)
+            #print(x,y,resample_pos[0,0,x.item(),y.item()],
+            #    irradiance_maps[0,0,x.item(),y.item()], resample[0,0,x.item(),y.item()], 
+            #    threshold_C_pos[0,0,x.item(),y.item()])
+            #print('fake pos max', resample_pos[0].max().max().max())
+            #print('fake neg max', resample_neg[0].max().max().max())
+            #print('real pos mean std, neg mean std', real_threshold_C_pos.mean(), real_threshold_C_pos.std(),real_threshold_C_neg.mean(), real_threshold_C_neg.std())
+            #print('fake pos mean std, neg mean std', threshold_C_pos.mean(), threshold_C_pos.std(),threshold_C_neg.mean(), threshold_C_neg.std())
+            #imageio.imwrite('image.bmp', images[0].squeeze().cpu().data.numpy().transpose(1,2,0))
+            #imageio.imwrite('light_irradiance_maps.bmp', irradiance_maps[0].squeeze().cpu().data.numpy())
+            #imageio.imwrite('threshold_C_pos.bmp', threshold_C_pos[0].squeeze().cpu().data.numpy())
+            #imageio.imwrite('threshold_C_neg.bmp', threshold_C_neg[0].squeeze().cpu().data.numpy())
+            #imageio.imwrite('image_next.bmp',resample[0].squeeze().cpu().data.numpy())
+            #imageio.imwrite('diffImg.bmp', diffImg[0].squeeze().cpu().data.numpy())
+            #imageio.imwrite('resample_pos.bmp', resample_pos[0].squeeze().cpu().data.numpy())
+            #imageio.imwrite('resample_neg.bmp', resample_neg[0].squeeze().cpu().data.numpy())
+            #imageio.imwrite('output.bmp', output.squeeze().cpu().data.numpy())
+            #print(diffImg.size())
+            #print(threshold_C_neg.size())
+            #print(resample_neg.size())
+            zero = torch.zeros_like(resample_pos)
+            output3 = torch.cat((resample_pos,zero),dim=1)
+            output3 = torch.cat((output3,resample_neg),dim=1)
+            #print(output3.size())
+            imageio.imwrite('event_simulator.bmp', np.trunc((output3[0]).squeeze().cpu().data.numpy().transpose(1,2,0)))
+                            
+            #real_output3 = torch.cat((real_resample_pos,zero),dim=1)
+            #real_output3 = torch.cat((real_output3,real_resample_neg),dim=1)
+            #imageio.imwrite('event_real.bmp', np.trunc((real_output3[0]).squeeze().cpu().data.numpy().transpose(1,2,0)))
+            '''
+            total_num = 20
+            index_num = 0
+            for i in range(0, optic_flows.size()[2]):
+                for j in range(0, optic_flows.size()[3]):
+                    if index_num >= total_num:
+                        break
+                    index_num += 1
+                    print(i,j,optic_flows[0,0,i,j],optic_flows[0,1,i,j], int(i+optic_flows[0,1,i,j]),int(j+optic_flows[0,0,i,j]),resample[0,0,int(i+optic_flows[0,1,i,j]),int(j+optic_flows[0,0,i,j])],irradiance_maps[0,0,i,j])
+            '''
+        #imageio.imwrite('image_next.bmp',resample[0].squeeze().cpu().data.numpy())
+        #return output, irradiance_maps, real_output, resample, images, \
+        #    real_threshold_C_pos, threshold_C_pos, \
+        #    real_threshold_C_neg, threshold_C_neg
+        #return images, irradiance_maps, resample, output, threshold_C_pos, threshold_C_neg
+        return images, irradiance_maps, resample, output, threshold_C_pos, threshold_C_pos
+
+class SegNetEnc(nn.Module):
+
+    def __init__(self, in_channels, out_channels, num_layers):
+        super().__init__()
+
+        layers = [
+            nn.Upsample(scale_factor=2,mode='bilinear',align_corners=True),
+            nn.Conv2d(in_channels, in_channels // 2, 3, padding=1),
+            nn.BatchNorm2d(in_channels // 2),
+            nn.ReLU(inplace=True),
+        ]
+        layers += [
+            nn.Conv2d(in_channels // 2, in_channels // 2, 3, padding=1),
+            nn.BatchNorm2d(in_channels // 2),
+            nn.ReLU(inplace=True),
+        ] * num_layers
+        layers += [
+            nn.Conv2d(in_channels // 2, out_channels, 3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+        ]
+        self.encode = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.encode(x)
+
+class EvSegNetOld(nn.Module):
+
+    def __init__(self, args):
+        super().__init__()
+        
+        self.minimum_threshold = args.minimum_threshold
+
+        self.debug_mode = args.debug
+        self.is_cuda_available = args.cuda
+        self.resizeShape = args.size
+        self.args = args
+        
+        decoders = list(models.vgg16(pretrained=False).features.children())
+
+        self.dec1 = nn.Sequential(*decoders[:5])
+        self.dec2 = nn.Sequential(*decoders[5:10])
+        self.dec3 = nn.Sequential(*decoders[10:17])
+        self.dec4 = nn.Sequential(*decoders[17:24])
+        self.dec5 = nn.Sequential(*decoders[24:])
+
+        #for m in self.modules():
+        #    if isinstance(m, nn.Conv2d):
+        #        m.requires_grad = False
+        #'''
+        self.enc5_m = SegNetEnc(512, 512, 1)
+        self.enc4_m = SegNetEnc(1024, 256, 1)
+        self.enc3_m = SegNetEnc(512, 128, 1)
+        self.enc2_m = SegNetEnc(256, 64, 0)
+        self.enc1_m = nn.Sequential(
+            nn.Upsample(scale_factor=2,mode='bilinear',align_corners=True),
+            nn.Conv2d(128, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True)
+        )
+        self.final_m = nn.Conv2d(64, 1, 3, padding=1)
+        
+        self.enc5_s = SegNetEnc(512, 512, 1)
+        self.enc4_s = SegNetEnc(1024, 256, 1)
+        self.enc3_s = SegNetEnc(512, 128, 1)
+        self.enc2_s = SegNetEnc(256, 64, 0)
+        self.enc1_s = nn.Sequential(
+            nn.Upsample(scale_factor=2,mode='bilinear',align_corners=True),
+            nn.Conv2d(128, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True)
+        )
+        self.final_s = nn.Conv2d(64, 1, 3, padding=1)
+        '''
+        self.enc_m = nn.Sequential(
+            SegNetEnc(512, 512, 1),
+            SegNetEnc(512, 256, 1),
+            SegNetEnc(256, 128, 1),
+            SegNetEnc(128, 64, 0),
+            nn.Upsample(scale_factor=2,mode='bilinear',align_corners=True),
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 1, 3, padding=1))
+        
+        self.enc_s = nn.Sequential(
+            SegNetEnc(512, 512, 1),
+            SegNetEnc(512, 256, 1),
+            SegNetEnc(256, 128, 1),
+            SegNetEnc(128, 64, 0),
+            nn.Upsample(scale_factor=2,mode='bilinear',align_corners=True),
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 1, 3, padding=1))
+        '''
+        self.warp = Resample2d()
+        #self.channelnorm = ChannelNorm()
+        #self.sigmoid = nn.Sigmoid()
+        
+        
+    def forward(self, images, irradiance_maps, optic_flows):    
+        '''
+            Attention, input size should be the 32x. 
+        '''
+        #irradiance_maps = torch.log(self.args.log_eps + irradiance_maps_nl)
+        #regularization = torch.zeros((1))
+        #if self.is_cuda_available:
+        #    regularization = regularization.cuda()
+        #regularization = torch.log((regularization+self.args.log_eps+255)/self.args.log_eps)/self.minimum_threshold
+        
+        x = images
+        #x = F.interpolate(images, self.resizeShape, mode='nearest')
+        dec1 = self.dec1(x)
+        dec2 = self.dec2(dec1)
+        dec3 = self.dec3(dec2)
+        dec4 = self.dec4(dec3)
+        dec5 = self.dec5(dec4)
+        
+        #normal_mean = self.enc_m(dec5)
+        #normal_std = self.enc_s(dec5)
+        #'''
+        enc5_m = self.enc5_m(dec5)
+        enc4_m = self.enc4_m(torch.cat([dec4, enc5_m], 1))
+        enc3_m = self.enc3_m(torch.cat([dec3, enc4_m], 1))
+        enc2_m = self.enc2_m(torch.cat([dec2, enc3_m], 1))
+        enc1_m = self.enc1_m(torch.cat([dec1, enc2_m], 1))
+        normal_mean = self.final_m(enc1_m)
+        
+        enc5_s = self.enc5_s(dec5) 
+        enc4_s = self.enc4_s(torch.cat([dec4, enc5_s], 1))
+        enc3_s = self.enc3_s(torch.cat([dec3, enc4_s], 1))
+        enc2_s = self.enc2_s(torch.cat([dec2, enc3_s], 1))
+        enc1_s = self.enc1_s(torch.cat([dec1, enc2_s], 1))
+        normal_std = self.final_s(enc1_s)
+        #'''
+        #normal = F.interpolate(self.final(enc1), x.size()[2:])
+        
+        #normal = enc1
+
+        #mean = normal[:,0,:]
+        #std = normal[:,1,:]
+        #print(normal_mean.size(),normal_std.size())
+        normal_sample = torch.randn(normal_mean.size())
+        if self.is_cuda_available:
+            normal_sample = normal_sample.cuda()
+        #threshold_C_pos = normal_sample[:,0:1,:] * normal[:,1:2,:] + normal[:,0:1,:]
+        #threshold_C_neg = normal_sample[:,1:2,:] * normal[:,1:2,:] + normal[:,0:1,:]
+        threshold_C_pos = normal_sample * normal_std + normal_mean
+        threshold_C_neg = normal_sample * normal_std + normal_mean
+        #print(threshold_C_pos[0,0,23,24])
+        #print(threshold_C_neg[0,0,23,24])
+        threshold_C_pos = F.relu(threshold_C_pos - self.minimum_threshold) + self.minimum_threshold
+        threshold_C_neg = F.relu(threshold_C_neg - self.minimum_threshold) + self.minimum_threshold
+        #print(threshold_C_pos[0,0,23,24])
+        #print(threshold_C_neg[0,0,23,24])
+        #print(irradiance_maps.size())
+        #print(optic_flows.size())
+        resample = self.warp(irradiance_maps, optic_flows)
+        #print(irradiance_maps[0,0,23,24])
+        #print(resample[0,0,23,24])
+        #print(resample.size())
+        diffImg = irradiance_maps - resample 
+        #print(diffImg[0,0,23,24])
+        #normDiffImg = self.channelnorm(diffImg)
+        #diffImg = F.interpolate(diffImg, x.size()[2:])
+        #print(diffImg[0,0,23,24])
+        resample_pos = F.relu(diffImg) / threshold_C_pos
+        resample_neg = F.relu(-diffImg) / threshold_C_neg
+        #print(resample_pos[0,0,23,24])
+        #print(resample_neg[0,0,23,24])
+        #output = resample_pos - resample_neg
+        #print(output[0,0,23,24])
+
+        #resample_pos = self.sigmoid(resample_pos)
+        #resample_neg = self.sigmoid(resample_neg)
+        #resample_pos = resample_pos / regularization
+        #resample_neg = resample_neg / regularization
+
+        output = torch.cat((resample_pos,resample_neg),dim=1)
+        
+        
+        real_normal_sample = torch.randn(normal_mean.size())
+        if self.is_cuda_available:
+            real_normal_sample = real_normal_sample.cuda()
+        real_threshold_C_pos = real_normal_sample * 0.021 + 0.15
+        real_threshold_C_neg = real_normal_sample * 0.021 + 0.15
+        real_threshold_C_pos = F.relu(real_threshold_C_pos - self.minimum_threshold) + self.minimum_threshold
+        real_threshold_C_neg = F.relu(real_threshold_C_neg - self.minimum_threshold) + self.minimum_threshold
+        real_resample_pos = F.relu(diffImg) / real_threshold_C_pos
+        real_resample_neg = F.relu(-diffImg) / real_threshold_C_neg
+        
+        #real_resample_pos = self.sigmoid(real_resample_pos)
+        #real_resample_neg = self.sigmoid(real_resample_neg)
+        
+        #real_resample_pos = real_resample_pos / regularization
+        #real_resample_neg = real_resample_neg / regularization
+
+        real_output = torch.cat((real_resample_pos,real_resample_neg),dim=1)
+        
+        #randSample = torch.rand_like(output)
+        #if self.is_cuda_available:
+        #    randSample = randSample.cuda()
+        #output = output - torch.log(-torch.log(randSample))
+        #output = F.softmax(output, dim=1)
+
+        if False and self.debug_mode:            
+            print('INFO: generatornet forward print Image')
+            #print('real max', real_output[0].mean().mean().mean())
+            print('fake max', output[0].mean().mean().mean())
+            #print('real max', real_output[0].max().max().max())
+            #y = resample_pos[0,0].max(0)[0].max(0)[1]
+            #x = resample_pos[0,0].max(1)[0].max(0)[1]
+            #print(x,y)
+            #print(resample)
+            #print('regularization',regularization)
+            #print(x,y,resample_pos[0,0,x.item(),y.item()],
+            #    irradiance_maps[0,0,x.item(),y.item()], resample[0,0,x.item(),y.item()], 
+            #    threshold_C_pos[0,0,x.item(),y.item()])
+            #print('fake pos max', resample_pos[0].max().max().max())
+            #print('fake neg max', resample_neg[0].max().max().max())
+            #print('real pos mean std, neg mean std', real_threshold_C_pos.mean(), real_threshold_C_pos.std(),real_threshold_C_neg.mean(), real_threshold_C_neg.std())
+            print('fake pos mean std, neg mean std', threshold_C_pos.mean(), threshold_C_pos.std(),threshold_C_neg.mean(), threshold_C_neg.std())
+            imageio.imwrite('image.bmp', images[0].squeeze().cpu().data.numpy().transpose(1,2,0))
+            imageio.imwrite('light_irradiance_maps.bmp', irradiance_maps[0].squeeze().cpu().data.numpy())
+            #imageio.imwrite('threshold_C_pos.bmp', threshold_C_pos[0].squeeze().cpu().data.numpy())
+            #imageio.imwrite('threshold_C_neg.bmp', threshold_C_neg[0].squeeze().cpu().data.numpy())
+            imageio.imwrite('light_resample.bmp',resample[0].squeeze().cpu().data.numpy())
+            #imageio.imwrite('diffImg.bmp', diffImg[0].squeeze().cpu().data.numpy())
+            #imageio.imwrite('resample_pos.bmp', resample_pos[0].squeeze().cpu().data.numpy())
+            #imageio.imwrite('resample_neg.bmp', resample_neg[0].squeeze().cpu().data.numpy())
+            #imageio.imwrite('output.bmp', output.squeeze().cpu().data.numpy())
+            #print(diffImg.size())
+            #print(threshold_C_neg.size())
+            #print(resample_neg.size())
+            zero = torch.zeros_like(resample_pos)
+            output3 = torch.cat((resample_pos,zero),dim=1)
+            output3 = torch.cat((output3,resample_neg),dim=1)
+            #print(output3.size())
+            imageio.imwrite('event_simulator.bmp', np.trunc((output3[0]).squeeze().cpu().data.numpy().transpose(1,2,0)))
+                            
+            #real_output3 = torch.cat((real_resample_pos,zero),dim=1)
+            #real_output3 = torch.cat((real_output3,real_resample_neg),dim=1)
+            #imageio.imwrite('event_real.bmp', np.trunc((real_output3[0]).squeeze().cpu().data.numpy().transpose(1,2,0)))
+            '''
+            total_num = 20
+            index_num = 0
+            for i in range(0, optic_flows.size()[2]):
+                for j in range(0, optic_flows.size()[3]):
+                    if index_num >= total_num:
+                        break
+                    index_num += 1
+                    print(i,j,optic_flows[0,0,i,j],optic_flows[0,1,i,j], int(i+optic_flows[0,1,i,j]),int(j+optic_flows[0,0,i,j]),resample[0,0,int(i+optic_flows[0,1,i,j]),int(j+optic_flows[0,0,i,j])],irradiance_maps[0,0,i,j])
+            '''
+        return output, irradiance_maps, real_output, resample, images, \
+            real_threshold_C_pos, threshold_C_pos, \
+            real_threshold_C_neg, threshold_C_neg
