@@ -12,7 +12,7 @@ class InferenceOptions():
         self.parser.add_argument('--model-dir', default="./Model/TrainingModels/16/generator_94.pth", help='path to stored-model')   #204c fenzhi
         #self.parser.add_argument('--model-dir', default="./Model/generatorIJRR.pth", help='path to stored-model')   #204c fenzhi
         #self.parser.add_argument('--model-dir', default="./Model/generatorMVSEC.pth", help='path to stored-model')   
-        #self.parser.add_argument('--data-images', default="./Data/V2E/images1000.txt",help='path where image.txt lies')
+        self.parser.add_argument('--data-images', default="./Data/images.txt",help='path where image.txt lies')
         #self.parser.add_argument('--reshape-size', default=(346,260), help='resize the image')
         #self.parser.add_argument('--reshape-size', default=(256,256), help='resize the image')
         self.parser.add_argument('--reshape-size', default=(240,180), help='resize the image')
