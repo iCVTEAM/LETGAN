@@ -14,8 +14,8 @@ pytorch=1.4, 1 NVIDIA-1080TI. More details can be found in paper.
 
 Download [model](https://pan.baidu.com/s/1NKKxkkipf3XYZ7K3SKSgRQ)(code:m0f2).  and add the folder into the "Model" folder.
 
-run command "python inference.py". Note that some configs should be prepared in "inferenceOptions.py"
-<!--Note that some configs should be prepared as [
+run command "python inference.py". Note that configs should be prepared in "inferenceOptions.py" and data should be prepared as folder "Data"
+.<!--Note that some configs should be prepared as [
 esim_config_generator
 ](https://github.com/TimoStoff/esim_config_generator). before running.-->
 
