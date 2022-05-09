@@ -1,0 +1,6 @@
+./Data/Images/00000.png 0.000
+./Data/Images/00001.png 0.001
+./Data/Images/00002.png 0.002
+./Data/Images/00003.png 0.003
+./Data/Images/00004.png 0.004
+./Data/Images/00005.png 0.005
